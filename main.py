@@ -40,6 +40,8 @@ IPADDRESS = socket.gethostbyname(HOSTNAME)
 MQTT_HOST = IPADDRESS
 MQTT_PORT = 3001
 MQTT_KEEPALIVE_INTERVAL = 60
+IMAGE_WIDTH = 640
+IMAGE_HEIGHT = 360
 
 
 def build_argparser():
@@ -85,29 +87,27 @@ def open_stream(args):
     from_camera = args.camera
 
     if from_camera:
-        cap = cv2.VideoCapture()
-        # cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        # cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1024)
-        cap.open(0)
+        cap = cv2.VideoCapture(0)
+        print("Camera capture resolution: (" + str(int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))) + " x " +
+              str(int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))) + ")")
     else:
         cap = cv2.VideoCapture(args.i)
         cap.open(args.i)
 
     # Create a video writer for the output video
-    out = cv2.VideoWriter('out.mp4', cv2.VideoWriter_fourcc('m','j','p','g'), 15, (640, 480))
+    os.remove('out.mp4')
+    out = cv2.VideoWriter('out.mp4', cv2.VideoWriter_fourcc('m','j','p','g'), 15, (IMAGE_WIDTH, IMAGE_HEIGHT))
 
     # Process frames until the video ends, or process is exited
     while cap.isOpened():
         # Read the next frame
         flag, frame = cap.read()
-        print(flag)
-        # print(frame)
         if not flag:
             break
         key_pressed = cv2.waitKey(60)
 
         ### TODO: Re-size the frame to 100x100
-        frame = cv2.resize(frame, (640, 480))
+        frame = cv2.resize(frame, (IMAGE_WIDTH, IMAGE_HEIGHT))
 
         cv2.imshow('frame', frame)
 
