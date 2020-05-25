@@ -26,6 +26,7 @@ import time
 import socket
 import json
 import cv2
+import numpy as np
 
 import logging as log
 import paho.mqtt.client as mqtt
@@ -50,7 +51,7 @@ def build_argparser():
     parser = ArgumentParser()
     parser.add_argument("-m", "--model", required=True, type=str,
                         help="Path to an xml file with a trained model.")
-    parser.add_argument("-i", "--input", required=True, type=str,
+    parser.add_argument("-i", "--input", required=False, type=str,
                         help="Path to image or video file")
     parser.add_argument("-l", "--cpu_extension", required=False, type=str,
                         default=None,
@@ -62,6 +63,10 @@ def build_argparser():
                              "CPU, GPU, FPGA or MYRIAD is acceptable. Sample "
                              "will look for a suitable plugin for device "
                              "specified (CPU by default)")
+    parser.add_argument("-cam", "--camera", type=bool, default=False,
+                        help="Capture from live camera instead of video file")
+    parser.add_argument("-s", "--show", type=bool, default=False,
+                        help="Show image or video in window")
     parser.add_argument("-pt", "--prob_threshold", type=float, default=0.5,
                         help="Probability threshold for detections filtering"
                         "(0.5 by default)")
@@ -73,6 +78,55 @@ def connect_mqtt():
     client = None
 
     return client
+
+
+def open_stream(args):
+    # Check if the input is a webcam
+    from_camera = args.camera
+
+    if from_camera:
+        cap = cv2.VideoCapture()
+        # cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        # cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1024)
+        cap.open(0)
+    else:
+        cap = cv2.VideoCapture(args.i)
+        cap.open(args.i)
+
+    # Create a video writer for the output video
+    out = cv2.VideoWriter('out.mp4', cv2.VideoWriter_fourcc('m','j','p','g'), 15, (640, 480))
+
+    # Process frames until the video ends, or process is exited
+    while cap.isOpened():
+        # Read the next frame
+        flag, frame = cap.read()
+        print(flag)
+        # print(frame)
+        if not flag:
+            break
+        key_pressed = cv2.waitKey(60)
+
+        ### TODO: Re-size the frame to 100x100
+        frame = cv2.resize(frame, (640, 480))
+
+        cv2.imshow('frame', frame)
+
+        ### TODO: Add Canny Edge Detection to the frame,
+        ###       with min & max values of 100 and 200
+        ###       Make sure to use np.dstack after to make a 3-channel image
+        # frame = cv2.Canny(frame, 100, 200)
+        # frame = np.dstack((frame, frame, frame))
+
+        ### TODO: Write out the frame, depending on image or video
+        out.write(frame)
+        # Break if escape key pressed
+        if key_pressed == 27:
+            break
+
+    ### TODO: Close the stream and any windows at the end of the application
+    out.release()
+    cap.release()
+    cv2.destroyAllWindows()
 
 
 def infer_on_stream(args, client):
@@ -92,6 +146,7 @@ def infer_on_stream(args, client):
     ### TODO: Load the model through `infer_network` ###
 
     ### TODO: Handle the input stream ###
+    open_stream(args)
 
     ### TODO: Loop until stream is over ###
 
