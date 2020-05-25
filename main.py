@@ -67,8 +67,10 @@ def build_argparser():
                              "specified (CPU by default)")
     parser.add_argument("-cam", "--camera", type=bool, default=False,
                         help="Capture from live camera instead of video file")
-    parser.add_argument("-s", "--show", type=bool, default=False,
-                        help="Show image or video in window")
+    parser.add_argument("-s", "--preview", type=bool, default=False,
+                        help="Show preview image window")
+    parser.add_argument("-o", "--out", type=bool, default="out.mp4",
+                        help="Output file with the processed content")
     parser.add_argument("-pt", "--prob_threshold", type=float, default=0.5,
                         help="Probability threshold for detections filtering"
                         "(0.5 by default)")
@@ -91,42 +93,23 @@ def open_stream(args):
         print("Camera capture resolution: (" + str(int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))) + " x " +
               str(int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))) + ")")
     else:
-        cap = cv2.VideoCapture(args.i)
-        cap.open(args.i)
+        if not hasattr(args, 'input'):
+            print('Input file must be especified')
+            exit(-1)
+        cap = cv2.VideoCapture(args.input)
+        cap.open(args.input)
 
     # Create a video writer for the output video
     os.remove('out.mp4')
     out = cv2.VideoWriter('out.mp4', cv2.VideoWriter_fourcc('m','j','p','g'), 15, (IMAGE_WIDTH, IMAGE_HEIGHT))
 
+    if not cap.isOpened():
+        print('Could not open input')
+        cap.release()
+        out.release()
+
+    return cap, out
     # Process frames until the video ends, or process is exited
-    while cap.isOpened():
-        # Read the next frame
-        flag, frame = cap.read()
-        if not flag:
-            break
-        key_pressed = cv2.waitKey(60)
-
-        ### TODO: Re-size the frame to 100x100
-        frame = cv2.resize(frame, (IMAGE_WIDTH, IMAGE_HEIGHT))
-
-        cv2.imshow('frame', frame)
-
-        ### TODO: Add Canny Edge Detection to the frame,
-        ###       with min & max values of 100 and 200
-        ###       Make sure to use np.dstack after to make a 3-channel image
-        # frame = cv2.Canny(frame, 100, 200)
-        # frame = np.dstack((frame, frame, frame))
-
-        ### TODO: Write out the frame, depending on image or video
-        out.write(frame)
-        # Break if escape key pressed
-        if key_pressed == 27:
-            break
-
-    ### TODO: Close the stream and any windows at the end of the application
-    out.release()
-    cap.release()
-    cv2.destroyAllWindows()
 
 
 def infer_on_stream(args, client):
@@ -146,9 +129,22 @@ def infer_on_stream(args, client):
     ### TODO: Load the model through `infer_network` ###
 
     ### TODO: Handle the input stream ###
-    open_stream(args)
+    cap, out = open_stream(args)
 
     ### TODO: Loop until stream is over ###
+    while cap.isOpened():
+        # Read the next frame
+        flag, frame = cap.read()
+        if not flag:
+            break
+        key_pressed = cv2.waitKey(60)
+        frame = cv2.resize(frame, (IMAGE_WIDTH, IMAGE_HEIGHT))
+        cv2.namedWindow('preview')
+        cv2.imshow('preview', frame)
+        out.write(frame)
+        # Break if escape key pressed
+        if key_pressed == 27:
+            break
 
         ### TODO: Read from the video capture ###
 
@@ -170,6 +166,9 @@ def infer_on_stream(args, client):
         ### TODO: Send the frame to the FFMPEG server ###
 
         ### TODO: Write an output image if `single_image_mode` ###
+    out.release()
+    cap.release()
+    cv2.destroyAllWindows()
 
 
 def main():
