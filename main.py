@@ -19,17 +19,19 @@
  WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 """
 
-
 import os
 import sys
 import time
+import os.path as path
 import socket
 import json
 import cv2
+import re
 import numpy as np
 
 import logging as log
 import paho.mqtt.client as mqtt
+import urllib.request as urllib
 
 from argparse import ArgumentParser
 from inference import Network
@@ -40,9 +42,17 @@ IPADDRESS = socket.gethostbyname(HOSTNAME)
 MQTT_HOST = IPADDRESS
 MQTT_PORT = 3001
 MQTT_KEEPALIVE_INTERVAL = 60
-IMAGE_WIDTH = 640
-IMAGE_HEIGHT = 360
+# IMAGE_WIDTH = 640
+# IMAGE_HEIGHT = 360
+IMAGE_WIDTH = 1280
+IMAGE_HEIGHT = 720
+MODEL_XML = "model/frozen_inference_graph.xml"
+LABELS_URL = "https://raw.githubusercontent.com/tensorflow/models/master/research/object_detection/data/mscoco_label_map.pbtxt"
+LABELS_FILE = "model/labels.pbtxt"
 
+# Create the dictionaries used form ID <-> Label conversions
+IDFromLabel = {}
+labelFromID = {}
 
 def build_argparser():
     """
@@ -73,7 +83,7 @@ def build_argparser():
                         help="Output file with the processed content")
     parser.add_argument("-pt", "--prob_threshold", type=float, default=0.5,
                         help="Probability threshold for detections filtering"
-                        "(0.5 by default)")
+                             "(0.5 by default)")
     return parser
 
 
@@ -82,6 +92,22 @@ def connect_mqtt():
     client = None
 
     return client
+
+def draw_boxes(frame, result, width, height):
+    '''
+    Draw bounding boxes onto the frame.
+    '''
+    expected_type = IDFromLabel['person']
+    for box in result[0][0]: # Output shape is 1x1x100x7
+        label_id = box[1]
+        conf = box[2]
+        if label_id == expected_type and conf >= 0.2:
+            xmin = int(box[3] * width)
+            ymin = int(box[4] * height)
+            xmax = int(box[5] * width)
+            ymax = int(box[6] * height)
+            cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), (0, 0, 255), 3)
+    return frame
 
 
 def open_stream(args):
@@ -100,15 +126,28 @@ def open_stream(args):
         cap.open(args.input)
 
     # Create a video writer for the output video
-    os.remove('out.mp4')
-    out = cv2.VideoWriter('out.mp4', cv2.VideoWriter_fourcc('m','j','p','g'), 15, (IMAGE_WIDTH, IMAGE_HEIGHT))
+    try:
+        os.remove('out.mp4')
+    except FileNotFoundError:
+        print('not found')
+
+    source_width = IMAGE_WIDTH
+    source_height = IMAGE_HEIGHT
+
+    if cap.isOpened():
+        source_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        source_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    print("souce image size: ( " + str(source_width) + " x " + str(source_height) + " )")
+
+    out = cv2.VideoWriter("out.mp4", cv2.VideoWriter_fourcc('m', 'j', 'p', 'g'), 15, (source_width, source_height))
 
     if not cap.isOpened():
         print('Could not open input')
         cap.release()
         out.release()
 
-    return cap, out
+    return cap, out, source_width, source_height
     # Process frames until the video ends, or process is exited
 
 
@@ -127,34 +166,43 @@ def infer_on_stream(args, client):
     prob_threshold = args.prob_threshold
 
     ### TODO: Load the model through `infer_network` ###
+    infer_network.load_model(MODEL_XML)
+
+    input_shape = infer_network.get_input_shape()
+    output_shape = infer_network.get_output_shape()
+    print("Input shape: ", input_shape)
+    print("Output shape: ", output_shape)
+    width = input_shape[2]
+    height = input_shape[3]
+    print('Input image will be resized to (' + str(width) + ' x ' + str(height) + ') for inference')
 
     ### TODO: Handle the input stream ###
-    cap, out = open_stream(args)
+    cap, out, source_width, source_height = open_stream(args)
 
     ### TODO: Loop until stream is over ###
     while cap.isOpened():
+        ### TODO: Read from the video capture ###
         # Read the next frame
         flag, frame = cap.read()
         if not flag:
             break
         key_pressed = cv2.waitKey(60)
-        frame = cv2.resize(frame, (IMAGE_WIDTH, IMAGE_HEIGHT))
-        cv2.namedWindow('preview')
-        cv2.imshow('preview', frame)
-        out.write(frame)
-        # Break if escape key pressed
-        if key_pressed == 27:
-            break
-
-        ### TODO: Read from the video capture ###
 
         ### TODO: Pre-process the image as needed ###
+        frame_inference = cv2.resize(frame, (width, height))
+
+        # Transform the image from the (300, 300, 3) original size to the (1, 3, 300, 300) input shape
+        frame_inference = frame_inference.transpose((2, 0, 1))
+        frame_inference = frame_inference.reshape(1, *frame_inference.shape)
 
         ### TODO: Start asynchronous inference for specified request ###
+        infer_network.exec_net(frame_inference)
 
         ### TODO: Wait for the result ###
-
+        if infer_network.wait() == 0:
             ### TODO: Get the results of the inference request ###
+            result = infer_network.get_output()
+            frame = draw_boxes(frame, result, source_width, source_height)
 
             ### TODO: Extract any desired stats from the results ###
 
@@ -163,20 +211,51 @@ def infer_on_stream(args, client):
             ### Topic "person": keys of "count" and "total" ###
             ### Topic "person/duration": key of "duration" ###
 
+
+
+        cv2.namedWindow('preview')
+        cv2.imshow('preview', frame)
+        # out.write(frame)
+
         ### TODO: Send the frame to the FFMPEG server ###
 
+        # Break if escape key pressed
+        if key_pressed == 27:
+            break
+
         ### TODO: Write an output image if `single_image_mode` ###
+
     out.release()
     cap.release()
     cv2.destroyAllWindows()
 
 
+def load_labels():
+    # Grab labels from Mobilenet V2 COCO
+    if not path.exists(LABELS_FILE):
+        urllib.urlretrieve(LABELS_URL, LABELS_FILE)
+
+    # Parse file and create dictionaries
+    with open(LABELS_FILE) as f:
+        txt = f.read()
+    lines = txt.split('\n')
+    i = 1
+    while i < len(lines):
+        id = int(re.search('.+: (.*)', lines[i+1], re.IGNORECASE).group(1))
+        display_name = re.search('.+: \"(.*)\"', lines[i+2], re.IGNORECASE).group(1)
+        i += 5
+        # print(str(id) + ': ' + display_name)
+        IDFromLabel[display_name] = id
+        labelFromID[id] = display_name
+    print("Labels loades")
+
+
 def main():
     """
     Load the network and parse the output.
-
     :return: None
     """
+    load_labels()
     # Grab command line args
     args = build_argparser().parse_args()
     # Connect to the MQTT server

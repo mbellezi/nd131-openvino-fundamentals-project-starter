@@ -27,7 +27,6 @@ import sys
 import logging as log
 from openvino.inference_engine import IENetwork, IECore
 
-
 class Network:
     """
     Load and configure inference plugins for the specified target devices 
@@ -35,34 +34,80 @@ class Network:
     """
 
     def __init__(self):
-        ### TODO: Initialize any class variables desired ###
+        self.ie = None
+        self.network = None
+        self.input_blob = None
+        self.output_blob = None
+        self.exec_network = None
+        self.infer_request = None
         return
 
-    def load_model(self):
-        ### TODO: Load the model ###
-        ### TODO: Check for supported layers ###
-        ### TODO: Add any necessary extensions ###
-        ### TODO: Return the loaded inference plugin ###
-        ### Note: You may need to update the function parameters. ###
-        return
+    def load_model(self, model, device="CPU", cpu_extension=None):
+        '''
+        Load the model given IR files.
+        Defaults to CPU as device for use in the workspace.
+        Synchronous requests made within.
+        '''
+        model_xml = model
+        model_bin = os.path.splitext(model_xml)[0] + ".bin"
+
+        # Initialize the inference engine
+        self.ie = IECore()
+
+        # Read the IR as a IENetwork
+        self.network = self.ie.read_network(model=model_xml, weights=model_bin)
+
+        ### Check for any unsupported layers, and let the user
+        ### know if anything is missing. Exit the program, if so.
+        supported_layers = self.ie.query_network(network=self.network, device_name=device)
+        unsupported_layers = [l for l in self.network.layers.keys() if l not in supported_layers]
+        if len(unsupported_layers) != 0:
+            print("Unsupported layers found: {}".format(unsupported_layers))
+            print("Check whether extensions are available to add to IECore.")
+            exit(1)
+
+        # Load the IENetwork into the inference engine
+        self.exec_network = self.ie.load_network(self.network, device)
+
+        # Get the input layer
+        self.input_blob = next(iter(self.network.inputs))
+        self.output_blob = next(iter(self.network.outputs))
+
+        print(self.input_blob)
+        print(self.output_blob)
+
+        print("IR successfully loaded into Inference Engine.")
+        return self.exec_network
 
     def get_input_shape(self):
-        ### TODO: Return the shape of the input layer ###
-        return
+        '''
+        Gets the input shape of the network
+        '''
+        return self.network.inputs[self.input_blob].shape
 
-    def exec_net(self):
-        ### TODO: Start an asynchronous request ###
-        ### TODO: Return any necessary information ###
-        ### Note: You may need to update the function parameters. ###
+    def get_output_shape(self):
+        '''
+        Gets the output shape of the network
+        '''
+        return self.network.outputs[self.output_blob].shape
+
+    def exec_net(self, image):
+        '''
+        Makes an asynchronous inference request, given an input image.
+        '''
+        self.exec_network.start_async(request_id=0,
+            inputs={self.input_blob: image})
         return
 
     def wait(self):
-        ### TODO: Wait for the request to be complete. ###
-        ### TODO: Return any necessary information ###
-        ### Note: You may need to update the function parameters. ###
-        return
+        '''
+        Checks the status of the inference request.
+        '''
+        status = self.exec_network.requests[0].wait(-1)
+        return status
 
     def get_output(self):
-        ### TODO: Extract and return the output results
-        ### Note: You may need to update the function parameters. ###
-        return
+        '''
+        Returns a list of the results for the output layer of the network.
+        '''
+        return self.exec_network.requests[0].outputs[self.output_blob]
