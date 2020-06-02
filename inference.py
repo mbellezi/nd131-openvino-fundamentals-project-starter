@@ -73,10 +73,10 @@ class Network:
         self.input_blob = next(iter(self.network.inputs))
         self.output_blob = next(iter(self.network.outputs))
 
-        print(self.input_blob)
-        print(self.output_blob)
+        #print(self.input_blob)
+        #print(self.output_blob)
 
-        print("IR successfully loaded into Inference Engine.")
+        #print("IR successfully loaded into Inference Engine.")
         return self.exec_network
 
     def get_input_shape(self):

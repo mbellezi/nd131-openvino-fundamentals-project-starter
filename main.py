@@ -35,6 +35,7 @@ import urllib.request as urllib
 
 from argparse import ArgumentParser
 from inference import Network
+from boundingbox_detection import BoundingBox, BoundingBoxTracker
 
 # MQTT server environment variables
 HOSTNAME = socket.gethostname()
@@ -53,6 +54,7 @@ LABELS_FILE = "model/labels.pbtxt"
 # Create the dictionaries used form ID <-> Label conversions
 IDFromLabel = {}
 labelFromID = {}
+
 
 def build_argparser():
     """
@@ -79,7 +81,7 @@ def build_argparser():
                         help="Capture from live camera instead of video file")
     parser.add_argument("-s", "--preview", type=bool, default=False,
                         help="Show preview image window")
-    parser.add_argument("-o", "--out", type=bool, default="out.mp4",
+    parser.add_argument("-o", "--out", type=str, default=None,
                         help="Output file with the processed content")
     parser.add_argument("-pt", "--prob_threshold", type=float, default=0.5,
                         help="Probability threshold for detections filtering"
@@ -89,24 +91,39 @@ def build_argparser():
 
 def connect_mqtt():
     ### TODO: Connect to the MQTT client ###
-    client = None
-
+    client = mqtt.Client()
+    client.connect(MQTT_HOST, MQTT_PORT, MQTT_KEEPALIVE_INTERVAL)
     return client
 
-def draw_boxes(frame, result, width, height):
-    '''
-    Draw bounding boxes onto the frame.
-    '''
-    expected_type = IDFromLabel['person']
-    for box in result[0][0]: # Output shape is 1x1x100x7
-        label_id = box[1]
+
+def get_boxes(result, prob_threshold=0.30):
+    expected_label = 'person'
+    expected_type = IDFromLabel[expected_label]
+    bbs = []
+    for box in result[0][0]:  # Output shape is 1x1x100x7
+        label_id = int(box[1])
         conf = box[2]
-        if label_id == expected_type and conf >= 0.2:
-            xmin = int(box[3] * width)
-            ymin = int(box[4] * height)
-            xmax = int(box[5] * width)
-            ymax = int(box[6] * height)
-            cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), (0, 0, 255), 3)
+        if label_id == expected_type and conf >= prob_threshold:
+            new_box = BoundingBox(box[3], box[4], box[5], box[6], expected_label, conf)
+            bbs.append(new_box)
+        else:
+            if label_id > 0: '''
+                print('Detecting: ' + labelFromID[label_id] + ' with probability: ' + str(conf))
+                '''
+    return bbs
+
+
+def draw_boxes(frame, bounding_boxes, width, height):
+    # print(bounding_boxes)
+    for key in bounding_boxes:
+        box = bounding_boxes[key]
+        xmin = int(box.xmin * width)
+        ymin = int(box.ymin * height)
+        xmax = int(box.xmax * width)
+        ymax = int(box.ymax * height)
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        cv2.putText(frame, "PERSON: " + str(box.id), (xmin + 25, ymin + 25), font, 0.50, (0, 0, 255), 2)
+        cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), (0, 0, 255), 3)
     return frame
 
 
@@ -116,20 +133,22 @@ def open_stream(args):
 
     if from_camera:
         cap = cv2.VideoCapture(0)
-        print("Camera capture resolution: (" + str(int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))) + " x " +
-              str(int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))) + ")")
+        #print("Camera capture resolution: (" + str(int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))) + " x " +
+        #      str(int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))) + ")")
     else:
         if not hasattr(args, 'input'):
-            print('Input file must be especified')
+        #    print('Input file must be specified')
             exit(-1)
         cap = cv2.VideoCapture(args.input)
         cap.open(args.input)
 
     # Create a video writer for the output video
-    try:
-        os.remove('out.mp4')
-    except FileNotFoundError:
-        print('not found')
+    if args.out:
+        try:
+            os.remove('out.mp4')
+        except FileNotFoundError: '''
+            print('previous ' + args.out + ' not found')
+            '''
 
     source_width = IMAGE_WIDTH
     source_height = IMAGE_HEIGHT
@@ -138,14 +157,17 @@ def open_stream(args):
         source_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         source_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    print("souce image size: ( " + str(source_width) + " x " + str(source_height) + " )")
+    #print("source image size: ( " + str(source_width) + " x " + str(source_height) + " )")
 
-    out = cv2.VideoWriter("out.mp4", cv2.VideoWriter_fourcc('m', 'j', 'p', 'g'), 15, (source_width, source_height))
+    out = None
+    if args.out:
+        out = cv2.VideoWriter(args.out, cv2.VideoWriter_fourcc('m', 'j', 'p', 'g'), 15, (source_width, source_height))
 
     if not cap.isOpened():
-        print('Could not open input')
+        #print('Could not open input')
         cap.release()
-        out.release()
+        if out:
+            out.release()
 
     return cap, out, source_width, source_height
     # Process frames until the video ends, or process is exited
@@ -170,11 +192,13 @@ def infer_on_stream(args, client):
 
     input_shape = infer_network.get_input_shape()
     output_shape = infer_network.get_output_shape()
-    print("Input shape: ", input_shape)
-    print("Output shape: ", output_shape)
+    #print("Input shape: ", input_shape)
+    #print("Output shape: ", output_shape)
     width = input_shape[2]
     height = input_shape[3]
-    print('Input image will be resized to (' + str(width) + ' x ' + str(height) + ') for inference')
+    #print('Input image will be resized to (' + str(width) + ' x ' + str(height) + ') for inference')
+
+    bb_tracker = BoundingBoxTracker(prob_threshold, 3, 20)
 
     ### TODO: Handle the input stream ###
     cap, out, source_width, source_height = open_stream(args)
@@ -202,7 +226,9 @@ def infer_on_stream(args, client):
         if infer_network.wait() == 0:
             ### TODO: Get the results of the inference request ###
             result = infer_network.get_output()
-            frame = draw_boxes(frame, result, source_width, source_height)
+            bboxes = get_boxes(result, prob_threshold)
+            bb_tracker.updateBBs(bboxes)
+            frame_processed = draw_boxes(frame, bb_tracker.getBBs(), source_width, source_height)
 
             ### TODO: Extract any desired stats from the results ###
 
@@ -211,11 +237,13 @@ def infer_on_stream(args, client):
             ### Topic "person": keys of "count" and "total" ###
             ### Topic "person/duration": key of "duration" ###
 
-
-
         cv2.namedWindow('preview')
-        cv2.imshow('preview', frame)
-        # out.write(frame)
+        cv2.imshow('preview', frame_processed)
+        if out:
+            out.write(frame_processed)
+        else:
+            sys.stdout.buffer.write(frame)
+            sys.stdout.flush()
 
         ### TODO: Send the frame to the FFMPEG server ###
 
@@ -225,7 +253,8 @@ def infer_on_stream(args, client):
 
         ### TODO: Write an output image if `single_image_mode` ###
 
-    out.release()
+    if out:
+        out.release()
     cap.release()
     cv2.destroyAllWindows()
 
@@ -241,13 +270,13 @@ def load_labels():
     lines = txt.split('\n')
     i = 1
     while i < len(lines):
-        id = int(re.search('.+: (.*)', lines[i+1], re.IGNORECASE).group(1))
-        display_name = re.search('.+: \"(.*)\"', lines[i+2], re.IGNORECASE).group(1)
+        id = int(re.search('.+: (.*)', lines[i + 1], re.IGNORECASE).group(1))
+        display_name = re.search('.+: \"(.*)\"', lines[i + 2], re.IGNORECASE).group(1)
         i += 5
         # print(str(id) + ': ' + display_name)
         IDFromLabel[display_name] = id
         labelFromID[id] = display_name
-    print("Labels loades")
+    #print("Labels loaded")
 
 
 def main():
@@ -262,6 +291,7 @@ def main():
     client = connect_mqtt()
     # Perform inference on the input stream
     infer_on_stream(args, client)
+    client.disconnect()
 
 
 if __name__ == '__main__':
