@@ -21,13 +21,11 @@
 
 import os
 import sys
-import time
 import os.path as path
 import socket
 import json
 import cv2
 import re
-import numpy as np
 
 import logging as log
 import paho.mqtt.client as mqtt
@@ -84,18 +82,19 @@ def build_argparser():
     parser.add_argument("-p", "--prob_threshold", type=float, default=0.5,
                         help="Probability threshold for detections filtering"
                              "(0.5 by default)")
+    parser.add_argument("-s", "--single_image_mode", action='store_true',
+                        help="Should only write one image")
     return parser
 
 
 def connect_mqtt():
-    ### TODO: Connect to the MQTT client ###
+    ### Connect to the MQTT client ###
     client = mqtt.Client()
     client.connect(MQTT_HOST, MQTT_PORT, MQTT_KEEPALIVE_INTERVAL)
     return client
 
 
-def get_boxes(result, prob_threshold=0.30):
-    expected_label = 'person'
+def get_boxes(result, expected_label, prob_threshold=0.30):
     expected_type = IDFromLabel[expected_label]
     bbs = []
     for box in result[0][0]:  # Output shape is 1x1x100x7
@@ -161,7 +160,7 @@ def open_stream(args):
     log.debug("source image size: ( %d x %d )", source_width, source_height)
 
     out = None
-    if args.out:
+    if args.out and not args.single_image_mode:
         out = cv2.VideoWriter(args.out, cv2.VideoWriter_fourcc('m', 'j', 'p', 'g'), 30, (source_width, source_height))
 
     if not cap.isOpened():
@@ -186,14 +185,13 @@ def infer_on_stream(args, client):
     lastTotal = -1
     lastCurrent = -1
 
-
     # Initialise the class
     infer_network = Network()
     # Set Probability threshold for detections
     prob_threshold = args.prob_threshold
 
-    ### TODO: Load the model through `infer_network` ###
-    infer_network.load_model(args.model)
+    # Load the model through `infer_network`
+    infer_network.load_model(args.model, "CPU", args.cpu_extension)
 
     input_shape = infer_network.get_input_shape()
     output_shape = infer_network.get_output_shape()
@@ -205,46 +203,46 @@ def infer_on_stream(args, client):
 
     bb_tracker = BoundingBoxTracker(lambda duration: client.publish("person/duration", json.dumps({"duration": duration})), prob_threshold, 3, 20)
 
-    ### TODO: Handle the input stream ###
+    # Handle the input stream
     cap, out, source_width, source_height = open_stream(args)
 
     client.publish("person", json.dumps({"total": 0, "count": 0}))
 
-    ### TODO: Loop until stream is over ###
+    # Loop until stream is over
     while cap.isOpened():
 
-        ### TODO: Read from the video capture ###
+        # Read from the video capture
         # Read the next frame
         flag, frame = cap.read()
         if not flag:
             break
         key_pressed = cv2.waitKey(60)
 
-        ### TODO: Pre-process the image as needed ###
+        # Pre-process the image as needed
         frame_inference = cv2.resize(frame, (width, height))
 
         # Transform the image from the (300, 300, 3) original size to the (1, 3, 300, 300) input shape
         frame_inference = frame_inference.transpose((2, 0, 1))
         frame_inference = frame_inference.reshape(1, *frame_inference.shape)
 
-        ### TODO: Start asynchronous inference for specified request ###
+        # Start asynchronous inference for specified request
         infer_network.exec_net(frame_inference)
 
-        ### TODO: Wait for the result ###
+        # Wait for the result
         if infer_network.wait() == 0:
-            ### TODO: Get the results of the inference request ###
+            # Get the results of the inference request
             result, latency = infer_network.get_output()
-            bboxes = get_boxes(result, prob_threshold)
+            bboxes = get_boxes(result, 'person', prob_threshold)
             bb_tracker.updateBBs(bboxes)
             frame = show_latency(frame, latency)
             processedBBs = bb_tracker.getBBs()
             frame = draw_boxes(frame, processedBBs, source_width, source_height)
 
-            ### TODO: Extract any desired stats from the results ###
-            ### TODO: Calculate and send relevant information on ###
-            ### current_count, total_count and duration to the MQTT server ###
-            ### Topic "person": keys of "count" and "total" ###
-            ### Topic "person/duration": key of "duration" ###
+            # Extract any desired stats from the results
+            # Calculate and send relevant information on
+            # current_count, total_count and duration to the MQTT server
+            # Topic "person": keys of "count" and "total"
+            # Topic "person/duration": key of "duration"
 
             current = len(processedBBs)
             total = bb_tracker.getTotalCount()
@@ -260,8 +258,8 @@ def infer_on_stream(args, client):
 
         if out:
             out.write(frame)
-        else:
-            ### TODO: Send the frame to the FFMPEG server ###
+        elif not args.single_image_mode:
+            # Send the frame to the FFMPEG server
             sys.stdout.buffer.write(frame)
             sys.stdout.flush()
 
@@ -270,6 +268,9 @@ def infer_on_stream(args, client):
             break
 
         ### TODO: Write an output image if `single_image_mode` ###
+        if args.single_image_mode:
+            cv2.imwrite("out.jpg", frame)
+            break
 
     client.publish("person", json.dumps({"total": 0, "count": 0}))
 

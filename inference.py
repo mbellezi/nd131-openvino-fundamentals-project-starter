@@ -57,6 +57,10 @@ class Network:
         # Initialize the inference engine
         self.ie = IECore()
 
+        # Add a CPU extension, if applicable
+        if cpu_extension and "CPU" in device:
+            self.ie.add_extension(cpu_extension, device)
+
         # Read the IR as a IENetwork
         self.network = self.ie.read_network(model=model_xml, weights=model_bin)
 
