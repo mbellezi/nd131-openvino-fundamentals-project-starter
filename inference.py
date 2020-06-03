@@ -27,6 +27,9 @@ import sys
 import logging as log
 from openvino.inference_engine import IENetwork, IECore
 
+log.basicConfig(level=log.DEBUG)
+
+
 class Network:
     """
     Load and configure inference plugins for the specified target devices 
@@ -62,8 +65,8 @@ class Network:
         supported_layers = self.ie.query_network(network=self.network, device_name=device)
         unsupported_layers = [l for l in self.network.layers.keys() if l not in supported_layers]
         if len(unsupported_layers) != 0:
-            print("Unsupported layers found: {}".format(unsupported_layers))
-            print("Check whether extensions are available to add to IECore.")
+            log.error("Unsupported layers found: {}".format(unsupported_layers))
+            log.error("Check whether extensions are available to add to IECore.")
             exit(1)
 
         # Load the IENetwork into the inference engine
@@ -73,10 +76,10 @@ class Network:
         self.input_blob = next(iter(self.network.inputs))
         self.output_blob = next(iter(self.network.outputs))
 
-        #print(self.input_blob)
-        #print(self.output_blob)
+        log.info("%s", self.input_blob)
+        log.info("%s", self.output_blob)
 
-        #print("IR successfully loaded into Inference Engine.")
+        log.info("IR successfully loaded into Inference Engine.")
         return self.exec_network
 
     def get_input_shape(self):
@@ -110,4 +113,4 @@ class Network:
         '''
         Returns a list of the results for the output layer of the network.
         '''
-        return self.exec_network.requests[0].outputs[self.output_blob]
+        return self.exec_network.requests[0].outputs[self.output_blob], self.exec_network.requests[0].latency

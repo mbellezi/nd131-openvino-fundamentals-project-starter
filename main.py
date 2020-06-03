@@ -43,11 +43,8 @@ IPADDRESS = socket.gethostbyname(HOSTNAME)
 MQTT_HOST = IPADDRESS
 MQTT_PORT = 3001
 MQTT_KEEPALIVE_INTERVAL = 60
-# IMAGE_WIDTH = 640
-# IMAGE_HEIGHT = 360
 IMAGE_WIDTH = 1280
 IMAGE_HEIGHT = 720
-MODEL_XML = "model/frozen_inference_graph.xml"
 LABELS_URL = "https://raw.githubusercontent.com/tensorflow/models/master/research/object_detection/data/mscoco_label_map.pbtxt"
 LABELS_FILE = "model/labels.pbtxt"
 
@@ -55,6 +52,7 @@ LABELS_FILE = "model/labels.pbtxt"
 IDFromLabel = {}
 labelFromID = {}
 
+log.basicConfig(level=log.DEBUG)
 
 def build_argparser():
     """
@@ -77,13 +75,13 @@ def build_argparser():
                              "CPU, GPU, FPGA or MYRIAD is acceptable. Sample "
                              "will look for a suitable plugin for device "
                              "specified (CPU by default)")
-    parser.add_argument("-cam", "--camera", type=bool, default=False,
+    parser.add_argument("-cam", "--camera", action='store_true',
                         help="Capture from live camera instead of video file")
-    parser.add_argument("-s", "--preview", type=bool, default=False,
+    parser.add_argument("-pv", "--preview", action='store_true',
                         help="Show preview image window")
     parser.add_argument("-o", "--out", type=str, default=None,
                         help="Output file with the processed content")
-    parser.add_argument("-pt", "--prob_threshold", type=float, default=0.5,
+    parser.add_argument("-p", "--prob_threshold", type=float, default=0.5,
                         help="Probability threshold for detections filtering"
                              "(0.5 by default)")
     return parser
@@ -107,14 +105,12 @@ def get_boxes(result, prob_threshold=0.30):
             new_box = BoundingBox(box[3], box[4], box[5], box[6], expected_label, conf)
             bbs.append(new_box)
         else:
-            if label_id > 0: '''
-                print('Detecting: ' + labelFromID[label_id] + ' with probability: ' + str(conf))
-                '''
+            if label_id > 0:
+                log.info('Detecting: %s with probability: %02.2f', labelFromID[label_id], conf)
     return bbs
 
 
 def draw_boxes(frame, bounding_boxes, width, height):
-    # print(bounding_boxes)
     for key in bounding_boxes:
         box = bounding_boxes[key]
         xmin = int(box.xmin * width)
@@ -127,17 +123,23 @@ def draw_boxes(frame, bounding_boxes, width, height):
     return frame
 
 
+def show_latency(frame, latency):
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    cv2.putText(frame, "Inference Time: {:2.1f} ms ".format(latency), (25, 25), font, 0.35, (0, 0, 255), 1)
+    return frame
+
+
 def open_stream(args):
     # Check if the input is a webcam
     from_camera = args.camera
 
     if from_camera:
         cap = cv2.VideoCapture(0)
-        #print("Camera capture resolution: (" + str(int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))) + " x " +
-        #      str(int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))) + ")")
+        log.info("Camera capture resolution: ( %d x %d )", cap.get(cv2.CAP_PROP_FRAME_WIDTH),
+                 cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     else:
         if not hasattr(args, 'input'):
-        #    print('Input file must be specified')
+            log.error('Input file must be specified')
             exit(-1)
         cap = cv2.VideoCapture(args.input)
         cap.open(args.input)
@@ -145,10 +147,9 @@ def open_stream(args):
     # Create a video writer for the output video
     if args.out:
         try:
-            os.remove('out.mp4')
-        except FileNotFoundError: '''
-            print('previous ' + args.out + ' not found')
-            '''
+            os.remove(args.out)
+        except FileNotFoundError:
+            ''' old file not found, ok '''
 
     source_width = IMAGE_WIDTH
     source_height = IMAGE_HEIGHT
@@ -157,20 +158,19 @@ def open_stream(args):
         source_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         source_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    #print("source image size: ( " + str(source_width) + " x " + str(source_height) + " )")
+    log.debug("source image size: ( %d x %d )", source_width, source_height)
 
     out = None
     if args.out:
-        out = cv2.VideoWriter(args.out, cv2.VideoWriter_fourcc('m', 'j', 'p', 'g'), 15, (source_width, source_height))
+        out = cv2.VideoWriter(args.out, cv2.VideoWriter_fourcc('m', 'j', 'p', 'g'), 30, (source_width, source_height))
 
     if not cap.isOpened():
-        #print('Could not open input')
+        log.error('Could not open input')
         cap.release()
         if out:
             out.release()
 
     return cap, out, source_width, source_height
-    # Process frames until the video ends, or process is exited
 
 
 def infer_on_stream(args, client):
@@ -182,29 +182,37 @@ def infer_on_stream(args, client):
     :param client: MQTT client
     :return: None
     """
+
+    lastTotal = -1
+    lastCurrent = -1
+
+
     # Initialise the class
     infer_network = Network()
     # Set Probability threshold for detections
     prob_threshold = args.prob_threshold
 
     ### TODO: Load the model through `infer_network` ###
-    infer_network.load_model(MODEL_XML)
+    infer_network.load_model(args.model)
 
     input_shape = infer_network.get_input_shape()
     output_shape = infer_network.get_output_shape()
-    #print("Input shape: ", input_shape)
-    #print("Output shape: ", output_shape)
+    log.info("Input shape: %s", input_shape)
+    log.info("Output shape: %s", output_shape)
     width = input_shape[2]
     height = input_shape[3]
-    #print('Input image will be resized to (' + str(width) + ' x ' + str(height) + ') for inference')
+    log.info('Input image will be resized to ( %d x %d ) for inference', width, height)
 
-    bb_tracker = BoundingBoxTracker(prob_threshold, 3, 20)
+    bb_tracker = BoundingBoxTracker(lambda duration: client.publish("person/duration", json.dumps({"duration": duration})), prob_threshold, 3, 20)
 
     ### TODO: Handle the input stream ###
     cap, out, source_width, source_height = open_stream(args)
 
+    client.publish("person", json.dumps({"total": 0, "count": 0}))
+
     ### TODO: Loop until stream is over ###
     while cap.isOpened():
+
         ### TODO: Read from the video capture ###
         # Read the next frame
         flag, frame = cap.read()
@@ -225,33 +233,45 @@ def infer_on_stream(args, client):
         ### TODO: Wait for the result ###
         if infer_network.wait() == 0:
             ### TODO: Get the results of the inference request ###
-            result = infer_network.get_output()
+            result, latency = infer_network.get_output()
             bboxes = get_boxes(result, prob_threshold)
             bb_tracker.updateBBs(bboxes)
-            frame_processed = draw_boxes(frame, bb_tracker.getBBs(), source_width, source_height)
+            frame = show_latency(frame, latency)
+            processedBBs = bb_tracker.getBBs()
+            frame = draw_boxes(frame, processedBBs, source_width, source_height)
 
             ### TODO: Extract any desired stats from the results ###
-
             ### TODO: Calculate and send relevant information on ###
             ### current_count, total_count and duration to the MQTT server ###
             ### Topic "person": keys of "count" and "total" ###
             ### Topic "person/duration": key of "duration" ###
 
-        cv2.namedWindow('preview')
-        cv2.imshow('preview', frame_processed)
+            current = len(processedBBs)
+            total = bb_tracker.getTotalCount()
+
+            if total != lastTotal or current != lastCurrent:
+                lastTotal = total
+                lastCurrent = current
+                client.publish("person", json.dumps({"total": total, "count": current}))
+
+        if args.preview:
+            cv2.namedWindow('preview')
+            cv2.imshow('preview', frame)
+
         if out:
-            out.write(frame_processed)
+            out.write(frame)
         else:
+            ### TODO: Send the frame to the FFMPEG server ###
             sys.stdout.buffer.write(frame)
             sys.stdout.flush()
-
-        ### TODO: Send the frame to the FFMPEG server ###
 
         # Break if escape key pressed
         if key_pressed == 27:
             break
 
         ### TODO: Write an output image if `single_image_mode` ###
+
+    client.publish("person", json.dumps({"total": 0, "count": 0}))
 
     if out:
         out.release()
@@ -273,10 +293,9 @@ def load_labels():
         id = int(re.search('.+: (.*)', lines[i + 1], re.IGNORECASE).group(1))
         display_name = re.search('.+: \"(.*)\"', lines[i + 2], re.IGNORECASE).group(1)
         i += 5
-        # print(str(id) + ': ' + display_name)
         IDFromLabel[display_name] = id
         labelFromID[id] = display_name
-    #print("Labels loaded")
+    log.info("Labels loaded")
 
 
 def main():

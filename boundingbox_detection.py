@@ -1,7 +1,6 @@
-from scipy.spatial import distance as dist
-import numpy as np
 import sys
 import math
+import time
 
 
 class BoundingBox():
@@ -14,6 +13,7 @@ class BoundingBox():
         self.id = None
         self.selected = False
         self.valid = False
+        self.time = 0
 
     def incMissingFrames(self):
         self.missingFrames += 1
@@ -48,12 +48,14 @@ class BoundingBox():
 
 
 class BoundingBoxTracker():
-    def __init__(self, min_probability=0.3, min_frames=3, max_missing_frames=10):
+    def __init__(self, rep_duration, min_probability=0.3, min_frames=3, max_missing_frames=10):
         self.nextid = 1
         self.bbs = {}
         self.max_missing_frames = max_missing_frames
         self.min_frames = min_frames
         self.min_probability = min_probability
+        self.total = 0
+        self.rep_duration = rep_duration
 
     def updateBBs(self, bounding_boxes: [BoundingBox]):
         # print(str(len(bounding_boxes)))
@@ -71,9 +73,11 @@ class BoundingBoxTracker():
                     last_distance = distance
                     bb.id = current_bb.id
                     bb.enteringFrames = current_bb.enteringFrames
+                    bb.valid = current_bb.valid
+                    bb.time = current_bb.time
             # Add a new bounding box with a new ID to the list
             if bb.id is None:
-                bb.setID(self.nextid)
+                bb.setID("t_" + str(self.nextid))
                 self.nextid += 1
             bb.setSelected(True)
             self.bbs[bb.id] = bb
@@ -84,7 +88,13 @@ class BoundingBoxTracker():
             if current_bb.detectionProb >= self.min_probability:
                 current_bb.incEnteringFrames()
                 if current_bb.enteringFrames >= self.min_frames:
-                    current_bb.setValid(True)
+                    if not current_bb.valid:
+                        self.total += 1
+                        del self.bbs[current_bb.id]
+                        current_bb.setID(self.total)
+                        current_bb.setValid(True)
+                        current_bb.time = time.time()
+                        self.bbs[current_bb.id] = current_bb
             else:
                 current_bb.resetEnteringFrames()
             if not current_bb.selected:
@@ -93,9 +103,12 @@ class BoundingBoxTracker():
                     continue
                 current_bb.incMissingFrames()
                 if current_bb.missingFrames >= self.max_missing_frames:
+                    self.rep_duration(time.time() - current_bb.time)
                     del self.bbs[key]
                 else:
                     current_bb.incMissingFrames()
+
+        return self.total
 
     def getBBs(self):
         filtered = dict()
@@ -104,3 +117,14 @@ class BoundingBoxTracker():
             if bb.valid:
                 filtered[key] = bb
         return filtered
+
+    def getTotalCount(self):
+        return self.total
+
+    def getTotalDuration(self):
+        duration = 0
+        for key in self.bbs:
+            bb = self.bbs[key]
+            if bb.valid:
+                duration += time.time() - bb.time
+        return duration
