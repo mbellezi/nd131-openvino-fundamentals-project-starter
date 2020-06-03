@@ -26,6 +26,7 @@ import socket
 import json
 import cv2
 import re
+import numpy as np
 
 import logging as log
 import paho.mqtt.client as mqtt
@@ -82,6 +83,8 @@ def build_argparser():
     parser.add_argument("-p", "--prob_threshold", type=float, default=0.5,
                         help="Probability threshold for detections filtering"
                              "(0.5 by default)")
+    parser.add_argument("-g", "--gamma", type=float, default=None,
+                        help="Apply Gamma corretion to the frames")
     parser.add_argument("-s", "--single_image_mode", action='store_true',
                         help="Should only write one image")
     return parser
@@ -172,6 +175,13 @@ def open_stream(args):
     return cap, out, source_width, source_height
 
 
+def apply_gamma(frame, gamma):
+    lookUpTable = np.empty((1, 256), np.uint8)
+    for i in range(256):
+        lookUpTable[0, i] = np.clip(pow(i / 255.0, gamma) * 255.0, 0, 255)
+    return cv2.LUT(frame, lookUpTable)
+
+
 def infer_on_stream(args, client):
     """
     Initialize the inference network, stream video to network,
@@ -219,6 +229,8 @@ def infer_on_stream(args, client):
         key_pressed = cv2.waitKey(60)
 
         # Pre-process the image as needed
+        if args.gamma:
+            frame = apply_gamma(frame, args.gamma)
         frame_inference = cv2.resize(frame, (width, height))
 
         # Transform the image from the (300, 300, 3) original size to the (1, 3, 300, 300) input shape
