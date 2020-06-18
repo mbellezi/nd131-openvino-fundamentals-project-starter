@@ -24,13 +24,18 @@ class Queue:
             frame = image[y_min:y_max, x_min:x_max]
             yield frame
 
-    def check_coords(self, coords):
+    def check_coords(self, coords, width, height):
         d = {k + 1: 0 for k in range(len(self.queues))}
         for coord in coords:
             for i, q in enumerate(self.queues):
-                if coord[0] > q[0] and coord[2] < q[2]:
+                if coord[3] > q[0]/width and coord[5] < q[2]/width:
                     d[i + 1] += 1
         return d
+
+    def draw_boxes(self, frame):
+        for q in self.queues:
+            x_min, y_min, x_max, y_max = q
+            cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (255, 0, 0), 2)
 
 
 class PersonDetect:
@@ -93,17 +98,15 @@ class PersonDetect:
         self.exec_network.start_async(request_id=0, inputs={self.input_name: frame_inference})
         if self.exec_network.requests[0].wait(-1) == 0:
             outputs = self.preprocess_outputs(self.exec_network.requests[0].outputs[self.output_name])
-            print('ok')
         return outputs
 
-    def draw_outputs(self, boxes, image):
-        height, width, depth = image.shape
+    def draw_outputs(self, boxes, image, width, height):
         for box in boxes:  # Output shape is 1x1x200x7
-            xmin = int(box[3] * width)
-            ymin = int(box[4] * height)
-            xmax = int(box[5] * width)
-            ymax = int(box[6] * height)
-            cv2.rectangle(image, (xmin, ymin), (xmax, ymax), (0, 0, 255), 2)
+            x_min = int(box[3] * width)
+            y_min = int(box[4] * height)
+            x_max = int(box[5] * width)
+            y_max = int(box[6] * height)
+            cv2.rectangle(image, (x_min, y_min), (x_max, y_max), (0, 0, 255), 2)
         return
 
     def preprocess_outputs(self, coords):
@@ -160,7 +163,7 @@ def main(args):
     initial_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     initial_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     video_len = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    print(video_len)
+
     cap.open(video_file)
     fps = int(cap.get(cv2.CAP_PROP_FPS))
     out_video = cv2.VideoWriter(os.path.join(output_path, 'output_video.mp4'), cv2.VideoWriter_fourcc(*'avc1'), fps,
@@ -181,9 +184,9 @@ def main(args):
             boxes = pd.predict(frame)
 
             # Draw boxes
-            pd.draw_outputs(boxes, frame)
+            pd.draw_outputs(boxes, frame, initial_w, initial_h)
 
-            num_people = queue.check_coords(boxes)
+            num_people = queue.check_coords(boxes, initial_w, initial_h)
             print(f"Total People in frame = {len(boxes)}")
             print(f"Number of people in queue = {num_people}")
             out_text = ""
@@ -200,6 +203,7 @@ def main(args):
 
             ## Local mode with window for debug
             if args.preview:
+                queue.draw_boxes(frame)
                 key_pressed = cv2.waitKey(60)
                 cv2.namedWindow('preview')
                 cv2.imshow('preview', frame)
