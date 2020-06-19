@@ -28,7 +28,7 @@ class Queue:
         d = {k + 1: 0 for k in range(len(self.queues))}
         for coord in coords:
             for i, q in enumerate(self.queues):
-                if coord[3] > q[0]/width and coord[5] < q[2]/width:
+                if coord[3] > q[0] / width and coord[5] < q[2] / width:
                     d[i + 1] += 1
         return d
 
